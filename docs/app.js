@@ -90,6 +90,7 @@
     $('toMonth').value = state.to;
     updatePresets();
     state.page = 0;
+    state.chart = 'range';
     render();
   }
 
@@ -228,7 +229,8 @@
     for (let tick = 0; tick <= 4; tick++) {
       const index = Math.round((points.length - 1) * tick / 4);
       const row = points[index];
-      svg.append(svgNode('text', { x: x(index), y: H - 13, 'text-anchor': tick === 0 ? 'start' : tick === 4 ? 'end' : 'middle', class: 'axis-label' }, shortMonth(row.date.slice(0, 7))));
+      const xLabel = points.length <= 65 ? row.date.slice(8, 10) + ' ' + MONTHS_SHORT[Number(row.date.slice(5, 7)) - 1] : shortMonth(row.date.slice(0, 7));
+      svg.append(svgNode('text', { x: x(index), y: H - 13, 'text-anchor': tick === 0 ? 'start' : tick === 4 ? 'end' : 'middle', class: 'axis-label' }, xLabel));
     }
     const area = `${line} L${x(points.length - 1).toFixed(2)},${(H - bottom).toFixed(2)} L${left},${(H - bottom).toFixed(2)} Z`;
     svg.append(svgNode('path', { d: area, class: 'area-path' }), svgNode('path', { d: line, class: 'line-path' }));
@@ -282,7 +284,7 @@
     $('toMonth').max = currentMonth;
     document.querySelectorAll('.preset').forEach((button) => button.addEventListener('click', () => applyPreset(button.dataset.preset)));
     for (const [id, name] of [['fromMonth', 'from'], ['toMonth', 'to']]) {
-      $(id).addEventListener('change', (event) => { state[name] = event.target.value; state.preset = 'custom'; updatePresets(); state.page = 0; render(); });
+      $(id).addEventListener('change', (event) => { state[name] = event.target.value; state.preset = 'custom'; updatePresets(); state.page = 0; state.chart = 'range'; render(); });
     }
     document.querySelectorAll('.chart-period').forEach((button) => button.addEventListener('click', () => { state.chart = button.dataset.chart; renderChart(); }));
     $('prevPage').addEventListener('click', () => { state.page--; renderTable(chosenRows()); });
