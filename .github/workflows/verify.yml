@@ -1,0 +1,71 @@
+name: JISDOR - Browser and Excel Verification
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['JISDOR - Update and Publish']
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jisdor-verification
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate data and numeric Excel writer
+        run: node scripts/test.mjs
+      - name: Install isolated browser test tools
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Test desktop, mobile, month calculations, downloads and live site
+        env:
+          LIVE_URL: https://budhi-halim.github.io/jisdor/
+        run: node scripts/browser-test.mjs
+      - name: Inspect downloaded XLSX cell types
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          import xml.etree.ElementTree as ET
+          ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+          paths = list(Path('qa-results').glob('*.xlsx'))
+          assert paths, 'Browser did not produce a workbook'
+          for path in paths:
+              with ZipFile(path) as z:
+                  assert z.testzip() is None
+                  root = ET.fromstring(z.read('xl/worksheets/sheet2.xml'))
+                  cells = root.findall('.//m:c', ns)
+                  rates = [c for c in cells if c.attrib['r'].startswith('B') and c.attrib['r'] != 'B1']
+                  dates = [c for c in cells if c.attrib['r'].startswith('A') and c.attrib['r'] != 'A1']
+                  assert rates and all(c.attrib.get('t', 'n') == 'n' and float(c.find('m:v', ns).text) > 0 for c in rates)
+                  assert dates and all(c.attrib.get('t', 'n') == 'n' and c.attrib.get('s') == '2' for c in dates)
+                  print(f'PASS: {path.name}: {len(rates)} numeric rates and {len(dates)} Excel date cells')
+          PY
+      - name: Keep verification evidence and tested source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jisdor-qa
+          path: |
+            qa-results/
+            docs/
+            scripts/
+            .github/workflows/
+            README.md
+          include-hidden-files: true
+          retention-days: 7
