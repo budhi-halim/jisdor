@@ -1,39 +1,43 @@
 # JISDOR
 
-Independent USD/IDR JISDOR dashboard using Bank Indonesia's published reference rates.
+USD/IDR reference-rate dashboard: https://budhi-halim.github.io/jisdor/
 
 ## Features
-- Latest published daily USD/IDR rate and interactive historical chart.
-- Monthly average over an inclusive, selectable start/end month range (previous month by default).
-- Individual monthly means, observations, range minimum/maximum, and daily published records.
-- Clear warning for selections including an unfinished current month.
-- XLSX download: summary, individual daily rates and monthly averages, numeric rates, true Excel dates, basic Excel formatting and formula-backed overall average.
-- Responsive desktop and mobile interface. No accounts, paid services, or build tools.
 
-## Data and accuracy
-JISDOR is Bank Indonesia's USD/IDR reference rate, not the *Kurs Transaksi BI* buy/sell quotation. The selected-period average is the **arithmetic mean of the daily JISDOR values actually published** on dates falling within the inclusive month range. Weekends, BI holidays and unpublished dates are not treated as zero and are not filled forward. An unfinished month is explicitly identified; its average will change as observations arrive.
+- Latest published JISDOR observation and day-over-day change, with the actual publication date.
+- Responsive daily-rate chart, pointer/touch tooltip and keyboard navigation.
+- Inclusive start/end month selection. Both fields default to the previous calendar month in Asia/Jakarta.
+- Previous month, last three completed months, year-to-date and current-month presets.
+- Selected-period daily arithmetic mean, separate monthly means and a sortable, paginated daily table.
+- Persistent warning whenever the selection includes the unfinished current month, plus warnings for absent months and outdated/fallback data.
+- XLSX download with Summary, Daily Rates and Monthly Averages sheets. Rates are numeric cells; dates are Excel dates; the summary average is an Excel formula.
 
-The committed historical seed was read from the JISDOR series in [risan/reksadana-id](https://github.com/risan/reksadana-id/blob/main/data/macro/usd-idr.csv), itself sourced from BI, with the last observed BI page rate applied when available. The refresh workflow retrieves 90 days from BI's official [getSubKursJisdor3 service](https://www.bi.go.id/biwebservice/wskursbi.asmx?op=getSubKursJisdor3) and merges by date so revisions replace old data; if BI is temporarily unavailable it attempts the third-party historical mirror as a fallback. The site displays the newest **observation date**, not an assumption that today's rate exists.
+## Calculation
 
-Data is updated on weekdays by GitHub Actions shortly after BI's current scheduled publication time of 15:15 WIB. GitHub scheduling may be delayed. Use the date/status indicator to judge freshness. This is an independent viewer and not an official Bank Indonesia service.
+The selected-period average is the arithmetic mean of every published daily JISDOR observation in the inclusive month range. It is **not** an unweighted average of monthly averages. Weekends, holidays and dates without observations are excluded rather than treated as zero or filled forward. The displayed mean is rounded to two decimals; calculations and exports retain the underlying precision.
 
-## Deploy
-1. Open **Settings → Pages** in the repository.
-2. Under **Build and deployment**, select **GitHub Actions** as Source. This one-time step is required for new Pages sites; a default workflow token cannot enable Pages.
-3. Open **Actions → JISDOR • update & publish → Run workflow** to publish immediately. Subsequent data refreshes and deployments are automatic.
+This dashboard average is distinct from BI's own transaction-volume-weighted calculation of each day's JISDOR. This is also not the separate buy/sell *Kurs Transaksi BI* series.
 
-Site URL: https://budhi-halim.github.io/jisdor/
+## Data
 
-## Files
-- `docs/index.html`, `docs/styles.css`, `docs/app.js`: self-contained website.
-- `docs/xlsx.js`: dependency-free XLSX writer.
-- `docs/data/jisdor.json`: typed daily historical data (ISO date and number).
-- `scripts/update.mjs`: BI source sync and fallback.
-- `scripts/test.mjs`: basic checks for dataset integrity and calculations.
-- `.github/workflows/site.yml`: schedule, refresh, tests, Pages deployment.
+Primary source: https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor3
 
-## Local view
-Open `docs/index.html` with a local HTTP server; fetch-based data won't load reliably from the `file://` scheme. For example, in the repository root with Node installed: `npx --yes http-server docs`. No install is needed for GitHub Pages.
+Official publication: https://www.bi.go.id/id/statistik/informasi-kurs/jisdor/Default.aspx
 
-## License and source
-Source rates © Bank Indonesia / credited dataset compilers. The website is not affiliated with BI. Source link: https://www.bi.go.id/id/statistik/informasi-kurs/jisdor/default.aspx.
+The retained historical seed begins on 20 May 2013 and was obtained from the BI-derived series at https://github.com/risan/reksadana-id/blob/main/data/macro/usd-idr.csv. The updater re-reads at least 95 days from BI, replaces revised official values, and catches up from the last observation after longer interruptions. If BI is unavailable, the mirror can add missing dates but cannot overwrite existing official values. Failed refreshes retain the last snapshot and are visibly labelled. Publication-date visibility is intentional: a successful page deployment is not a guarantee that BI has published a new rate.
+
+## Deployment and verification
+
+`.github/workflows/site.yml` refreshes, validates and deploys `docs/` on every push, on manual runs and on a schedule. Scheduled refreshes are 15:45 and 18:30 WIB on weekdays, plus Saturday at 10:00 WIB. GitHub may delay scheduled runs. No API key or paid hosting service is needed.
+
+`.github/workflows/verify.yml` runs after successful deployment and checks the real browser UI at desktop, tablet, narrow-mobile and landscape sizes, default month selection, monthly/multi-month means, incomplete-month warnings, invalid input, sorting, pagination, a real XLSX download, numeric/date cells and the public Pages URL. Screenshots and machine-readable results are retained as the `jisdor-qa` Actions artifact for seven days.
+
+Pages publishes `docs/`. For a new fork, enable Pages in repository Settings and select GitHub Actions as the publishing source.
+
+## Local development
+
+Serve `docs/` with an HTTP server, rather than opening the HTML using `file://`. Core logic and workbook integrity checks run with `node scripts/test.mjs`. Browser checks require Playwright; CI installs its pinned test-only version automatically. The deployed website itself has no JavaScript package dependencies.
+
+## Source and affiliation
+
+Independent data viewer, not affiliated with Bank Indonesia. Published reference rates are attributed to Bank Indonesia. Consult the official publication for corrections and critical decisions.

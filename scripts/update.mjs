@@ -1,112 +1,85 @@
 #!/usr/bin/env node
-/**
- * Update the committed JISDOR dataset from Bank Indonesia's official historical service.
- * When BI is unavailable, a publicly readable BI-derived historical mirror is used
- * to add missing observations (existing official values are never overwritten).
- *
- * No third-party packages; intended for GitHub Actions Node 22.
- */
 import fs from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 
 const FILE = new URL('../docs/data/jisdor.json', import.meta.url);
 const BI_URL = 'https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor3';
 const MIRROR_URL = 'https://raw.githubusercontent.com/risan/reksadana-id/main/data/macro/usd-idr.csv';
-const fromRows = (rows) => new Map(rows);
-const todayInJakarta = () => {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
-  const field = (key) => parts.find((part) => part.type === key).value;
-  return `${field('year')}-${field('month')}-${field('day')}`;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const validRow = row => {
+  if (!Array.isArray(row) || row.length !== 2) return false;
+  const [date, value] = row;
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(value) || value <= 1000 || value >= 100000) return false;
+  const parsed = new Date(date + 'T12:00:00Z');
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 };
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const validRow = ([date, value]) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(value) && value > 1000 && value < 100000;
-
-function parseBiXml(xml) {
-  const rows = [...xml.matchAll(/<Table(?:\s[^>]*)?>([\s\S]*?)<\/Table>/gi)].map((match) => {
-    const field = (name) => match[1].match(new RegExp(`<${name}>([^<]+)</${name}>`, 'i'))?.[1].trim();
-    return [field('tgl_subkursasing')?.slice(0, 10) ?? '', Number(field('jual_subkursasing'))];
-  });
-  return rows.filter(validRow);
+function todayInJakarta() {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const field = key => parts.find(part => part.type === key).value;
+  return `${field('year')}-${field('month')}-${field('day')}`;
 }
-
-function parseMirror(csv) {
-  return csv.split(/\r?\n/).slice(1).map((line) => {
-    const [date, rate] = line.trim().split(',');
-    return [date, Number(rate)];
+function parseBiXml(xml) {
+  return [...xml.matchAll(/<Table(?:\s[^>]*)?>([\s\S]*?)<\/Table>/gi)].map(match => {
+    const field = name => match[1].match(new RegExp(`<${name}>([^<]+)</${name}>`, 'i'))?.[1].trim();
+    return [field('tgl_subkursasing')?.slice(0, 10) ?? '', Number(field('jual_subkursasing'))];
   }).filter(validRow);
 }
-
+function parseMirror(csv) {
+  return csv.split(/\r?\n/).slice(1).map(line => { const [date, rate] = line.trim().split(','); return [date, Number(rate)]; }).filter(validRow);
+}
 async function fetchText(url, options = {}) {
   const response = await fetch(url, {
     ...options,
-    headers: { 'User-Agent': 'Mozilla/5.0 JisdorDashboard/1.0', Accept: 'application/xml,text/plain,*/*', ...options.headers },
+    headers: { 'User-Agent': 'Mozilla/5.0 JisdorDashboard/1.1', Accept: 'application/xml,text/plain,*/*', ...options.headers },
     signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} from ${new URL(url).host}`);
   return response.text();
 }
-
-async function fetchFromBi(startDate, endDate) {
-  const params = new URLSearchParams({ mts: 'USD', startDate, endDate });
-  const xml = await fetchText(BI_URL, { method: 'POST', body: params, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-  const rows = parseBiXml(xml);
-  if (!rows.length) throw new Error('The BI service response contained no valid JISDOR rows');
-  return rows;
-}
-
 async function run() {
   const data = JSON.parse(await fs.readFile(FILE, 'utf8'));
-  if (data.schema !== 1 || !Array.isArray(data.rows) || data.rows.length < 100) throw new Error('Stored dataset failed validation');
+  if (data.schema !== 1 || !Array.isArray(data.rows) || !data.rows.length || !data.rows.every(validRow)) throw new Error('Stored dataset failed validation; leaving it unchanged');
   const today = todayInJakarta();
-  const start = new Date(`${today}T00:00:00Z`);
-  start.setUTCDate(start.getUTCDate() - 95);
-  const startDate = start.toISOString().slice(0, 10);
-  const byDate = fromRows(data.rows);
-  let source = '';
-  let downloaded = [];
-
+  const recent = new Date(today + 'T00:00:00Z'); recent.setUTCDate(recent.getUTCDate() - 95);
+  const lastKnown = [...data.rows].sort((a, b) => a[0].localeCompare(b[0])).at(-1)[0];
+  const catchUp = new Date(lastKnown + 'T00:00:00Z'); catchUp.setUTCDate(catchUp.getUTCDate() - 7);
+  // Catch up after an extended outage, and re-read at least 95 days to pick up BI revisions.
+  const startDate = new Date(Math.min(recent.getTime(), catchUp.getTime())).toISOString().slice(0, 10);
+  const byDate = new Map(data.rows);
+  let source = 'snapshot', downloaded = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      downloaded = await fetchFromBi(startDate, today);
-      source = 'BI';
-      break;
-    } catch (error) {
-      console.warn(`BI request ${attempt}/2 failed: ${error.message}`);
-      if (attempt !== 2) await sleep(1700);
-    }
+      const body = new URLSearchParams({ mts: 'USD', startDate, endDate: today });
+      downloaded = parseBiXml(await fetchText(BI_URL, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })).filter(([date]) => date >= startDate && date <= today);
+      if (!downloaded.length) throw new Error('No valid observations in the requested BI date range');
+      source = 'BI'; break;
+    } catch (error) { console.warn(`BI attempt ${attempt}/2: ${error.message}`); if (attempt === 1) await sleep(1700); }
   }
-
   if (!downloaded.length) {
     try {
-      downloaded = parseMirror(await fetchText(MIRROR_URL));
-      if (!downloaded.length) throw new Error('Mirror response had no valid observations');
-      source = 'historical mirror';
-      data.last_mirror_sync = new Date().toISOString();
-      console.warn('Using BI-derived historical mirror because the official service is unavailable.');
-    } catch (error) {
-      console.warn(`Mirror request failed: ${error.message}`);
-    }
+      downloaded = parseMirror(await fetchText(MIRROR_URL)).filter(([date]) => date <= today);
+      if (!downloaded.length) throw new Error('No valid mirror observations');
+      source = 'mirror'; data.last_mirror_sync = new Date().toISOString();
+      console.warn('Official BI service unavailable; using a clearly labelled BI-derived mirror.');
+    } catch (error) { console.warn(`Mirror: ${error.message}`); }
   }
-
-  const latestKnown = data.rows.at(-1)?.[0] || '';
   let added = 0, corrected = 0;
   for (const [date, rate] of downloaded) {
-    if (date > today || !validRow([date, rate])) continue;
     if (!byDate.has(date)) added++;
     else if (source === 'BI' && byDate.get(date) !== rate) corrected++;
+    // A mirror can fill gaps but must never overwrite an existing BI value.
     if (source === 'BI' || !byDate.has(date)) byDate.set(date, rate);
   }
-  const rows = [...byDate.entries()].filter(validRow).sort((a, b) => a[0].localeCompare(b[0]));
-  if (rows.length < data.rows.length) throw new Error('Update would discard historical observations');
-  if (source === 'BI') data.last_bi_sync = new Date().toISOString();
-  data.last_attempt = new Date().toISOString();
-  data.rows = rows;
-  await fs.writeFile(FILE, JSON.stringify(data) + '\n');
-  console.log(`Source: ${source || 'existing verified snapshot'}; added ${added}, revised ${corrected}; total ${rows.length}; previous latest ${latestKnown}; latest ${rows.at(-1)[0]}.`);
-  if (!source) console.warn('New rates could not be retrieved; preserving all existing data and date metadata.');
+  const rows = [...byDate].sort((a, b) => a[0].localeCompare(b[0]));
+  if (rows.length < data.rows.length) throw new Error('Refusing to discard historical observations');
+  const now = new Date().toISOString();
+  if (source === 'BI') data.last_bi_sync = now;
+  data.last_attempt = now; data.last_source = source; data.rows = rows;
+  const temporary = new URL('../docs/data/jisdor.json.tmp', import.meta.url);
+  await fs.writeFile(temporary, JSON.stringify(data) + '\n');
+  await fs.rename(temporary, FILE);
+  console.log(`Source: ${source}; added ${added}, revised ${corrected}; ${rows.length} observations; latest ${rows.at(-1)[0]} = ${rows.at(-1)[1]}.`);
+  if (source === 'snapshot') console.warn('Refresh failed. Existing data retained; the website will display a persistent warning.');
 }
-
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  run().catch((error) => { console.error(error); process.exitCode = 1; });
-}
-
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) run().catch(error => { console.error(error); process.exitCode = 1; });
 export { parseBiXml, parseMirror, validRow };
