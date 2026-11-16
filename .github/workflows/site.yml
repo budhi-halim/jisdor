@@ -5,7 +5,7 @@ on:
     branches: [master]
   workflow_dispatch:
   schedule:
-    # Current BI publication: 15:15 Asia/Jakarta. Scheduling is not guaranteed to be punctual.
+    # Current BI publication: 15:15 Asia/Jakarta. GitHub may delay scheduled runs.
     - cron: '45 8 * * 1-5'
     - cron: '30 11 * * 1-5'
     - cron: '0 3 * * 6'
@@ -56,12 +56,17 @@ jobs:
             git pull --rebase origin master
             git push origin HEAD:master
           fi
+      - name: Prepare consistent root and dashboard paths
+        run: |
+          mkdir -p _site
+          cp index.html .nojekyll _site/
+          cp -R docs _site/docs
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload static website
         uses: actions/upload-pages-artifact@v4
         with:
-          path: docs
+          path: _site
       - name: Publish site
         id: deployment
         uses: actions/deploy-pages@v4
